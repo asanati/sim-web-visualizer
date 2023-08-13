@@ -965,11 +965,14 @@ class URDF:
             yourdfpy.URDF: URDF model.
         """
         if isinstance(fname_or_file, six.string_types):
+            base_directory = os.path.dirname(fname_or_file)
             if not os.path.isfile(fname_or_file):
                 raise ValueError("{} is not a file".format(fname_or_file))
 
             if not "mesh_dir" in kwargs:
                 kwargs["mesh_dir"] = os.path.dirname(fname_or_file)
+        else:
+            base_directory = kwargs.get("mesh_dir", "")
 
         try:
             parser = etree.XMLParser(remove_blank_text=True)
@@ -1001,7 +1004,7 @@ class URDF:
         etree.strip_tags(xml_root, etree.Comment)
         etree.cleanup_namespaces(xml_root)
 
-        return URDF(robot=URDF._parse_robot(xml_element=xml_root), **kwargs)
+        return URDF(robot=URDF._parse_robot(xml_element=xml_root, base_directory=base_directory), **kwargs)
 
     def contains(self, key, value, element=None) -> bool:
         """Checks recursively whether the URDF tree contains the provided key-value pair.
@@ -1748,16 +1751,30 @@ class URDF:
         elif geometry.mesh is not None:
             self._write_mesh(xml_element, geometry.mesh)
 
-    def _parse_origin(xml_element):
+    def _parse_origin(xml_element, y_up=False):
         if xml_element is None:
             return None
 
         xyz = xml_element.get("xyz", default="0 0 0")
         rpy = xml_element.get("rpy", default="0 0 0")
 
+        xyz = np.array(list(map(float, xyz.split())))
+        angles = np.array(list(map(float, rpy.split())))
+
+        if y_up:  # If COLLADA file specifies Y_UP
+            # Special case for the racket
+            if xyz[0] == -0.08 and xyz[1] == 0.12 and xyz[2] == 0.0:
+                angles = np.array([angles[0] - np.pi/2, -angles[2], angles[1]])
+                xyz = np.array([xyz[0], -xyz[1], xyz[2]])
+            else:
+                # Convert the Euler rotations
+                angles = np.array([angles[0] + np.pi/2, -angles[2], angles[1]])
+                # Convert the XYZ translations: New Z is old Y, new Y is -old Z
+                xyz = np.array([xyz[0], -xyz[2], xyz[1]])
+
         return tra.compose_matrix(
-            translate=np.array(list(map(float, xyz.split()))),
-            angles=np.array(list(map(float, rpy.split()))),
+            translate=xyz,
+            angles=angles,
         )
 
     def _write_origin(self, xml_parent, origin):
@@ -1827,11 +1844,36 @@ class URDF:
         self._write_color(xml_element, material.color)
         self._write_texture(xml_element, material.texture)
 
-    def _parse_visual(xml_element):
+    def _parse_visual(xml_element, base_directory=""):
         visual = Visual(name=xml_element.get("name"))
 
         visual.geometry = URDF._parse_geometry(xml_element.find("geometry"))
-        visual.origin = URDF._parse_origin(xml_element.find("origin"))
+        y_up = False  # By default, assume Z_UP
+    
+        mesh_filename = visual.geometry.mesh.filename if visual.geometry.mesh else None
+
+        if mesh_filename and (mesh_filename.lower().endswith(".dae")):
+            tree = etree.parse(os.path.join(base_directory, mesh_filename))
+            xml_root = tree.getroot()
+
+            # Set a flag to check if up_axis is found
+            found_up_axis = False
+
+            # Iterate through all asset elements
+            for asset in xml_root.iter("{http://www.collada.org/2005/11/COLLADASchema}asset"):
+                # Iterate through children of the asset element
+                for child in asset:
+                    if child.tag == "{http://www.collada.org/2005/11/COLLADASchema}up_axis":
+                        if child.text == "Y_UP":
+                            y_up = True
+                        found_up_axis = True
+                        break
+
+            # If up_axis was not found in the COLLADA file, set y_up to a default value (e.g., True for Y_UP)
+            if not found_up_axis:
+                y_up = True  # Assuming default is Y_UP
+
+        visual.origin = URDF._parse_origin(xml_element.find("origin"), y_up=y_up)
         visual.material = URDF._parse_material(xml_element.find("material"))
 
         return visual
@@ -1851,11 +1893,36 @@ class URDF:
         self._write_origin(xml_element, visual.origin)
         self._write_material(xml_element, visual.material)
 
-    def _parse_collision(xml_element):
+    def _parse_collision(xml_element, base_directory=""):
         collision = Collision(name=xml_element.get("name"))
 
         collision.geometry = URDF._parse_geometry(xml_element.find("geometry"))
-        collision.origin = URDF._parse_origin(xml_element.find("origin"))
+        y_up = False
+        
+        mesh_filename = collision.geometry.mesh.filename if collision.geometry.mesh else None
+
+        if mesh_filename and (mesh_filename.lower().endswith(".dae")):
+            tree = etree.parse(os.path.join(base_directory, mesh_filename))
+            xml_root = tree.getroot()
+
+            # Set a flag to check if up_axis is found
+            found_up_axis = False
+
+            # Iterate through all asset elements
+            for asset in xml_root.iter("{http://www.collada.org/2005/11/COLLADASchema}asset"):
+                # Iterate through children of the asset element
+                for child in asset:
+                    if child.tag == "{http://www.collada.org/2005/11/COLLADASchema}up_axis":
+                        if child.text == "Y_UP":
+                            y_up = True
+                        found_up_axis = True
+                        break
+
+            # If up_axis was not found in the COLLADA file, set y_up to a default value (e.g., True for Y_UP)
+            if not found_up_axis:
+                y_up = True  # Assuming default is Y_UP
+
+        collision.origin = URDF._parse_origin(xml_element.find("origin"), y_up=y_up)
 
         return collision
 
@@ -1956,16 +2023,16 @@ class URDF:
         self._write_mass(xml_element, inertial.mass)
         self._write_inertia(xml_element, inertial.inertia)
 
-    def _parse_link(xml_element):
+    def _parse_link(xml_element, base_directory=""):
         link = Link(name=xml_element.attrib["name"])
 
         link.inertial = URDF._parse_inertial(xml_element.find("inertial"))
 
         for v in xml_element.findall("visual"):
-            link.visuals.append(URDF._parse_visual(v))
+            link.visuals.append(URDF._parse_visual(v, base_directory))
 
         for c in xml_element.findall("collision"):
-            link.collisions.append(URDF._parse_collision(c))
+            link.collisions.append(URDF._parse_collision(c, base_directory))
 
         return link
 
@@ -2161,11 +2228,11 @@ class URDF:
         self._write_dynamics(xml_element, joint.dynamics)
 
     @staticmethod
-    def _parse_robot(xml_element):
+    def _parse_robot(xml_element, base_directory=""):
         robot = Robot(name=xml_element.attrib["name"])
 
         for l in xml_element.findall("link"):
-            robot.links.append(URDF._parse_link(l))
+            robot.links.append(URDF._parse_link(l, base_directory))
         for j in xml_element.findall("joint"):
             robot.joints.append(URDF._parse_joint(j))
         for m in xml_element.findall("material"):

@@ -20,7 +20,7 @@ from numpy.lib.recfunctions import structured_to_unstructured
 from sim_web_visualizer.base_visualizer_client import MeshCatVisualizerBase, AssetResource
 from sim_web_visualizer.utils.rotation_utils import compute_vector_rotation
 
-USE_GPU_PIPELINE = False
+USE_GPU_PIPELINE = True
 
 
 class MimicGym:

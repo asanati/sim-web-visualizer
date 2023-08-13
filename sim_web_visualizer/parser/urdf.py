@@ -80,10 +80,8 @@ def load_urdf_with_yourdfpy(urdf_path: str, collapse_fixed_joints: bool,
             if geom.mesh is not None:
                 mesh_scale = geom.mesh.scale if geom.mesh.scale is not None else np.array([1, 1, 1])
                 mesh_filename = robot.filename_handler(fname=geom.mesh.filename)
-                if mesh_filename.lower().endswith("obj") or mesh_filename.lower().endswith("dae"):
+                if mesh_filename.lower().endswith("obj"):
                     trimesh_geom = trimesh.load(mesh_filename, ignore_broken=True)
-
-                    assert mesh_filename.lower().endswith("obj") or isinstance(trimesh_geom, trimesh.Scene)
 
                     # Handle complex obj where multiple mesh are presented
                     if isinstance(trimesh_geom, trimesh.Scene):
@@ -99,6 +97,20 @@ def load_urdf_with_yourdfpy(urdf_path: str, collapse_fixed_joints: bool,
                         geometries = [g.ObjMeshGeometry.from_stream(trimesh.util.wrap_as_stream(exp_mesh))]
                         mats = [get_trimesh_geometry_material(trimesh_geom, urdf_rgba)]
                         poses.append(visual_pose)
+                elif mesh_filename.lower().endswith("dae"):
+                    trimesh_geom = trimesh.load(mesh_filename, ignore_broken=True)
+
+                    assert isinstance(trimesh_geom, trimesh.Scene)
+
+                    # Handle complex obj where multiple mesh are presented
+                    if isinstance(trimesh_geom, trimesh.Scene):
+                        for name, scene_geometry in trimesh_geom.geometry.items():
+                            mesh = scene_geometry.visual.mesh
+                            mesh.apply_scale(mesh_scale)
+                            geometries.append(g.DaeMeshGeometry.from_file(mesh_filename))
+                            mats.append(get_trimesh_geometry_material(scene_geometry, urdf_rgba))
+                            local_pose = visual_pose @ trimesh_geom.graph.get(name)[0]
+                            poses.append(visual_pose)
                 elif mesh_filename.lower().endswith("stl"):
                     mesh = trimesh.load(mesh_filename, ignore_broken=True)
                     mesh.apply_scale(mesh_scale)
